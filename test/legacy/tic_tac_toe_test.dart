@@ -1,9 +1,9 @@
-// Widget tests for the Tic-Tac-Toe game.
+// Widget tests for the (legacy) Tic-Tac-Toe game.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:game/main.dart';
+import 'package:game/legacy/tic_tac_toe.dart';
 
 void main() {
   Finder cell(int index) => find.byKey(ValueKey('cell-$index'));

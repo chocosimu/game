@@ -1,64 +1,66 @@
-# Tic-Tac-Toe（○× ゲーム）
+# Mystery Dungeon（仮）— Flutter ローグライク
 
-Flutter で作った Tic-Tac-Toe（三目並べ / ○×ゲーム）です。Web（Chrome）で動作します。
+「トルネコの大冒険3 不思議のダンジョン」を参考にした、ローグライクゲームを Flutter で開発しています。
+最終的にはスマートフォンのネイティブアプリを目指し、**段階的に**作っていきます。
 
-A polished Tic-Tac-Toe game built with Flutter, running on the web (Chrome).
+A roguelike game inspired by *Torneko / Mystery Dungeon*, built with Flutter and developed step by step.
 
-![Gameplay screenshot](docs/screenshot.png)
+> 開発方針の詳細は [`CLAUDE.md`](CLAUDE.md) を参照してください。
 
-## 特長 / Features
+## いまの状態（第一段階）
 
-- 🤖 **vs Computer** — `Easy`（ランダム）と `Hard`（ミニマックス法・無敵）の難易度を選択
-- 👥 **2 Players** — 2人で対戦
-- 🏆 勝敗・引き分けのスコア記録、勝ったラインのハイライト
-- 🎨 Material 3 デザイン、アニメーション付き
-- ✅ ウィジェットテスト付き
+**マップ生成と移動の土台**ができています。敵・アイテム・戦闘はまだありません。
 
-## 必要環境 / Requirements
+- 🗺️ 入るたびに地形が変わる**自動生成ダンジョン**（部屋＋通路）
+- 🚶 キャラクターが**ターン制で1マスずつ移動**（8方向／壁の角はすり抜けない）
+- 🔦 **フォグ（霧）**：歩いて見た場所だけ明るくなる（不思議のダンジョン風の視界）
+- 🪜 **下り階段**に乗ると次のフロアへ（地形が作り直される）
+- 🎮 画面のボタン操作（PC では矢印キー / `WASD` / `QEZC` でも移動可）
 
-- [Flutter](https://docs.flutter.dev/get-started/install) (stable, 3.44 以降 / Dart 3.12+)
-- Chrome（Web 実行・確認用）
+| はじまりの部屋 | 探索中（フォグ＝霧） |
+| :---: | :---: |
+| ![開始](docs/screenshot.png) | ![探索](docs/screenshot_explored.png) |
 
-## 実行方法 / Run
+## 動かし方
 
 ```bash
 flutter pub get
-
-# Chrome で起動 / Launch in Chrome
 flutter run -d chrome
 ```
 
-ブラウザ用にビルドする場合 / Build for the web:
+Web 用にビルドする場合：
 
 ```bash
-flutter build web --release
-# 出力 / Output: build/web/
+flutter build web --release --no-web-resources-cdn
 ```
 
-> ネットワークが制限された環境では、CanvasKit をローカルに同梱する
-> `--no-web-resources-cdn` を付けてビルドしてください。
-> In restricted-network environments, build with `--no-web-resources-cdn`
-> so CanvasKit is bundled locally instead of fetched from a CDN.
+> ネットワーク制限のある環境では `--no-web-resources-cdn` を付けて、
+> CanvasKit（描画エンジン）をローカルに同梱してください。
 
-## テスト / Tests
+## テスト
 
 ```bash
-flutter test
 flutter analyze
+flutter test
 ```
 
-## 構成 / Project structure
+- `test/dungeon_test.dart` … 生成された地図が正しいか（全床がスタートからつながっているか等）
+- `test/game_screen_test.dart` … 移動とターンの基本動作
+
+## 構成
 
 ```
-lib/main.dart          # ゲーム本体（UI + ロジック + ミニマックス AI）
-test/widget_test.dart  # ウィジェットテスト
-web/                   # Web 用エントリポイント
-docs/screenshot.png    # スクリーンショット
+lib/main.dart         アプリの入口
+lib/dungeon.dart      地図データと自動生成ロジック
+lib/game_screen.dart  描画・入力・ターン管理
+lib/legacy/           最初に試作した○×ゲーム（保管用）
 ```
 
-## 遊び方 / How to play
+## 補足：最初の試作（○×ゲーム）
 
-1. 画面上部で対戦モード（`vs Computer` / `2 Players`）と難易度を選びます。
-2. マスをタップして ○× を置きます（あなたは X、先手）。
-3. 縦・横・斜めのいずれかを 3 つそろえると勝ちです。
-4. `New Round` で盤面リセット、`Reset Scores` でスコアもリセットします。
+要件が大まかだった頃に作った Tic-Tac-Toe は `lib/legacy/` に残しています。
+単独で動かす場合：
+
+```bash
+flutter run -d chrome -t lib/legacy/tic_tac_toe.dart
+```
