@@ -1,0 +1,64 @@
+# GitHub Pages へ自動で公開するための設定ファイル。
+# このブランチに push されると、GitHub 側が自動で
+# 「Flutter で Web ビルド → 公開」までやってくれる。
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches:
+      - claude/happy-bohr-BLwbg
+      - main
+  workflow_dispatch: # 手動でも実行できるようにする
+
+# 公開に必要な権限。
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 公開は同時に1つだけ（実行中のものは止めない）。
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: コードを取得
+        uses: actions/checkout@v4
+
+      - name: Flutter を準備
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.0
+
+      - name: 依存パッケージを取得
+        run: flutter pub get
+
+      - name: Web 用にビルド
+        # プロジェクトページなので base-href は "/game/"。
+        # CanvasKit はローカル同梱（CDN に頼らない）。
+        run: flutter build web --release --base-href "/game/" --no-web-resources-cdn
+
+      - name: Pages を設定（無効なら自動で有効化）
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: 公開する中身をアップロード
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: GitHub Pages へデプロイ
+        id: deployment
+        uses: actions/deploy-pages@v4
