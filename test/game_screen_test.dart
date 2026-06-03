@@ -59,4 +59,16 @@ void main() {
 
     expect(find.text('ターン 1'), findsOneWidget);
   });
+
+  testWidgets('HUDにレベル・HP・満腹度が表示される', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(500, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(const MaterialApp(home: GameScreen(seed: 1)));
+    await tester.pump();
+
+    expect(find.text('Lv 1'), findsOneWidget);
+    expect(find.text('HP 15/15'), findsOneWidget);
+    expect(find.text('満腹 100/100'), findsOneWidget);
+  });
 }
