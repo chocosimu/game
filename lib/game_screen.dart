@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'dungeon.dart';
+import 'monster.dart';
+import 'player.dart';
 
 /// ゲーム画面。地図とキャラの描画・入力・ターン管理をまとめて受け持つ。
 class GameScreen extends StatefulWidget {
@@ -21,6 +23,8 @@ class _GameScreenState extends State<GameScreen> {
   static const int _mapHeight = 25;
 
   late Dungeon _dungeon;
+  late Player _player;
+  final List<Monster> _monsters = <Monster>[];
   late int _playerX;
   late int _playerY;
   int _floor = 1;
@@ -36,6 +40,7 @@ class _GameScreenState extends State<GameScreen> {
   @override
   void initState() {
     super.initState();
+    _player = Player();
     _generateFloor();
   }
 
@@ -58,13 +63,49 @@ class _GameScreenState extends State<GameScreen> {
         List.generate(_mapHeight, (_) => List<bool>.filled(_mapWidth, false));
     _visible =
         List.generate(_mapHeight, (_) => List<bool>.filled(_mapWidth, false));
+    _spawnMonsters(random);
     _updateVisibility();
+  }
+
+  /// このフロアにモンスターを配置する（今はスライムだけ）。
+  /// スタート部屋には置かず、ほかの部屋に2〜4匹ばらまく。
+  void _spawnMonsters(Random random) {
+    _monsters.clear();
+    final startRoomIndex = _dungeon.roomAt(_playerX, _playerY);
+
+    // スタート部屋以外の部屋を候補にする。
+    final candidateRooms = <int>[];
+    for (var i = 0; i < _dungeon.rooms.length; i++) {
+      if (i != startRoomIndex) candidateRooms.add(i);
+    }
+    candidateRooms.shuffle(random);
+
+    // 2〜4匹（候補の部屋数が少なければその数まで）。
+    final count = min(2 + random.nextInt(3), candidateRooms.length);
+    for (var i = 0; i < count; i++) {
+      final room = _dungeon.rooms[candidateRooms[i]];
+      final x = room.left + random.nextInt(room.width);
+      final y = room.top + random.nextInt(room.height);
+      // プレイヤーや別の敵と重なる位置は避ける。
+      if (x == _playerX && y == _playerY) continue;
+      if (_monsterAt(x, y) != null) continue;
+      _monsters.add(Monster(kind: MonsterKind.slime, x: x, y: y));
+    }
+  }
+
+  /// その座標に生きている敵がいれば返す（いなければ null）。
+  Monster? _monsterAt(int x, int y) {
+    for (final m in _monsters) {
+      if (m.isAlive && m.x == x && m.y == y) return m;
+    }
+    return null;
   }
 
   void _restart() {
     setState(() {
       _floor = 1;
       _turns = 0;
+      _player = Player();
       _generateFloor();
     });
   }
@@ -114,10 +155,15 @@ class _GameScreenState extends State<GameScreen> {
       }
     }
 
+    // 移動先に敵がいたら、今はぶつかって進めないだけ。
+    // （ぶつかって戦う「戦闘」は次の段階で作る。）
+    if (_monsterAt(nx, ny) != null) return;
+
     setState(() {
       _playerX = nx;
       _playerY = ny;
       _turns++;
+      _player.onStep(); // 1歩あるくと満腹度が減る（0ならHPが減る）
       _updateVisibility();
       // 下り階段に乗ったら、次のフロアへ（地形が作り直される）。
       if (_dungeon.tiles[_playerY][_playerX] == TileType.stairsDown) {
@@ -171,6 +217,7 @@ class _GameScreenState extends State<GameScreen> {
                       playerY: _playerY,
                       discovered: _discovered,
                       visible: _visible,
+                      monsters: _monsters,
                     ),
                     child: const SizedBox.expand(),
                   ),
@@ -187,19 +234,78 @@ class _GameScreenState extends State<GameScreen> {
   Widget _buildHud() {
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 8, 8, 4),
-      child: Row(
+      child: Column(
         children: [
-          _hudChip('B${_floor}F', Icons.stairs_outlined),
-          const SizedBox(width: 8),
-          _hudChip('ターン $_turns', Icons.history),
-          const Spacer(),
-          TextButton.icon(
-            onPressed: _restart,
-            icon: const Icon(Icons.refresh, size: 18),
-            label: const Text('最初から'),
+          Row(
+            children: [
+              _hudChip('B${_floor}F', Icons.stairs_outlined),
+              const SizedBox(width: 8),
+              _hudChip('ターン $_turns', Icons.history),
+              const Spacer(),
+              TextButton.icon(
+                onPressed: _restart,
+                icon: const Icon(Icons.refresh, size: 18),
+                label: const Text('最初から'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              _hudChip('Lv ${_player.level}', Icons.star_outline),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _statBar(
+                  'HP',
+                  _player.hp,
+                  _player.maxHp,
+                  _player.hpRatio,
+                  const Color(0xFF66BB6A),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _statBar(
+                  '満腹',
+                  _player.fullness,
+                  _player.maxFullness,
+                  _player.fullnessRatio,
+                  const Color(0xFFFFCA28),
+                ),
+              ),
+            ],
           ),
         ],
       ),
+    );
+  }
+
+  /// HP・満腹度などの「数値つき横バー」。
+  Widget _statBar(String label, int value, int max, double ratio, Color color) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '$label $value/$max',
+          style: const TextStyle(color: Colors.white70, fontSize: 11),
+        ),
+        const SizedBox(height: 2),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(6),
+          child: Stack(
+            children: [
+              Container(
+                height: 10,
+                color: Colors.white.withValues(alpha: 0.12),
+              ),
+              FractionallySizedBox(
+                widthFactor: ratio,
+                child: Container(height: 10, color: color),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
@@ -291,6 +397,7 @@ class _DungeonPainter extends CustomPainter {
     required this.playerY,
     required this.discovered,
     required this.visible,
+    required this.monsters,
   });
 
   final Dungeon dungeon;
@@ -298,6 +405,7 @@ class _DungeonPainter extends CustomPainter {
   final int playerY;
   final List<List<bool>> discovered;
   final List<List<bool>> visible;
+  final List<Monster> monsters;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -334,6 +442,29 @@ class _DungeonPainter extends CustomPainter {
         );
         _paintTile(canvas, rect, dungeon.tiles[y][x], visible[y][x], tile);
       }
+    }
+
+    // モンスター（いま見えているマスにいる敵だけ描く）。
+    for (final m in monsters) {
+      if (!m.isAlive) continue;
+      if (m.x < 0 || m.y < 0 || m.x >= dungeon.width || m.y >= dungeon.height) {
+        continue;
+      }
+      if (!visible[m.y][m.x]) continue;
+      final mc = Offset(
+        m.x * tile - camX + tile / 2,
+        m.y * tile - camY + tile / 2,
+      );
+      canvas
+        ..drawCircle(mc, tile * 0.32, Paint()..color = Color(m.kind.color))
+        ..drawCircle(
+          mc,
+          tile * 0.32,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = tile * 0.06
+            ..color = const Color(0xFF134A6B),
+        );
     }
 
     // プレイヤー（画面中央）。
