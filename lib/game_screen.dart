@@ -1,6 +1,7 @@
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 
 import 'combat.dart';
@@ -19,7 +20,8 @@ class GameScreen extends StatefulWidget {
   State<GameScreen> createState() => GameScreenState();
 }
 
-class GameScreenState extends State<GameScreen> {
+class GameScreenState extends State<GameScreen>
+    with SingleTickerProviderStateMixin {
   static const int _mapWidth = 41;
   static const int _mapHeight = 25;
 
@@ -47,18 +49,70 @@ class GameScreenState extends State<GameScreen> {
   final FocusNode _focusNode = FocusNode();
   int _seedOffset = 0;
 
+  // 戦闘の見た目演出（ダメージ数字・ヒット時の赤い点滅）。
+  // 1枚の時計（Ticker）で全エフェクトの経過時間を進め、終わったら消す。
+  late final Ticker _ticker;
+  final List<_Effect> _effects = <_Effect>[];
+  Duration _lastTick = Duration.zero;
+
   @override
   void initState() {
     super.initState();
     _rng = widget.seed != null ? Random(widget.seed! + 9999) : Random();
+    _ticker = createTicker(_onTick);
     _player = Player();
     _generateFloor();
   }
 
   @override
   void dispose() {
+    _ticker.dispose();
     _focusNode.dispose();
     super.dispose();
+  }
+
+  /// 毎フレーム呼ばれ、エフェクトの経過時間を進める。全部終わったら時計を止める。
+  void _onTick(Duration elapsed) {
+    final dt = elapsed - _lastTick;
+    _lastTick = elapsed;
+    setState(() {
+      for (final e in _effects) {
+        e.elapsed += dt;
+      }
+      _effects.removeWhere((e) => e.elapsed >= e.lifetime);
+      if (_effects.isEmpty) _ticker.stop();
+    });
+  }
+
+  /// エフェクトを1つ足す（時計が止まっていたら動かし始める）。
+  void _addEffect(_Effect e) {
+    _effects.add(e);
+    if (!_ticker.isActive) {
+      _lastTick = Duration.zero;
+      _ticker.start();
+    }
+  }
+
+  /// タイル (tx,ty) の位置にダメージ数字を浮かせる。
+  void _spawnDamageNumber(num tx, num ty, String text, Color color) {
+    _addEffect(_Effect(
+      x: tx.toDouble(),
+      y: ty.toDouble(),
+      text: text,
+      color: color,
+      lifetime: const Duration(milliseconds: 650),
+    ));
+  }
+
+  /// タイル (tx,ty) に当たった瞬間の赤い点滅を出す。
+  void _spawnFlash(num tx, num ty, Color color) {
+    _addEffect(_Effect(
+      x: tx.toDouble(),
+      y: ty.toDouble(),
+      color: color,
+      lifetime: const Duration(milliseconds: 280),
+      isFlash: true,
+    ));
   }
 
   /// 新しいフロアの地図を作り、プレイヤーと霧を初期化する。
@@ -75,6 +129,9 @@ class GameScreenState extends State<GameScreen> {
     _visible =
         List.generate(_mapHeight, (_) => List<bool>.filled(_mapWidth, false));
     _spawnMonsters(random);
+    // 前のフロアの演出が残らないように消しておく。
+    _effects.clear();
+    if (_ticker.isActive) _ticker.stop();
     _updateVisibility();
   }
 
@@ -266,12 +323,15 @@ class GameScreenState extends State<GameScreen> {
     // まず命中判定（8%で外れる）。
     if (!rollHit(_rng)) {
       _say('${m.kind.name}に攻撃したが はずれた');
+      _spawnDamageNumber(m.x, m.y - 0.2, 'MISS', const Color(0xFFB0BEC5));
       return;
     }
     final atkPower =
         baseAttackPower(levelAttackFor(_player.level), _player.strength);
     final dmg = rollDamage(baseDamage(atkPower, m.kind.defense), _rng);
     m.hp -= dmg;
+    _spawnFlash(m.x, m.y, const Color(0xFFFF5252));
+    _spawnDamageNumber(m.x, m.y - 0.2, '$dmg', const Color(0xFFFFE082));
     if (m.hp <= 0) {
       m.hp = 0;
       final ups = _player.gainExp(m.kind.exp, _rng);
@@ -286,11 +346,14 @@ class GameScreenState extends State<GameScreen> {
   void _enemyAttack(Monster m) {
     if (!rollHit(_rng)) {
       _say('${m.kind.name}の攻撃を かわした');
+      _spawnDamageNumber(_playerX, _playerY - 0.2, 'かわした', const Color(0xFFB0BEC5));
       return;
     }
     final dmg = rollDamage(baseDamage(m.kind.attack.toDouble(), 0), _rng);
     _player.hp = (_player.hp - dmg).clamp(0, _player.maxHp);
     _say('${m.kind.name}の攻撃！ $dmg のダメージ');
+    _spawnFlash(_playerX, _playerY, const Color(0xFFFF1744));
+    _spawnDamageNumber(_playerX, _playerY - 0.2, '$dmg', const Color(0xFFFF8A80));
   }
 
   /// このフロアの敵全員に1回ずつ行動させる。
@@ -430,6 +493,7 @@ class GameScreenState extends State<GameScreen> {
                           discovered: _discovered,
                           visible: _visible,
                           monsters: _monsters,
+                          effects: _effects,
                         ),
                         child: const SizedBox.expand(),
                       ),
@@ -681,6 +745,7 @@ class _DungeonPainter extends CustomPainter {
     required this.discovered,
     required this.visible,
     required this.monsters,
+    required this.effects,
   });
 
   final Dungeon dungeon;
@@ -689,6 +754,7 @@ class _DungeonPainter extends CustomPainter {
   final List<List<bool>> discovered;
   final List<List<bool>> visible;
   final List<Monster> monsters;
+  final List<_Effect> effects;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -765,6 +831,38 @@ class _DungeonPainter extends CustomPainter {
           ..strokeWidth = tile * 0.06
           ..color = const Color(0xFF7A5B00),
       );
+
+    // 戦闘の演出（赤い点滅・ダメージ数字）を一番上に描く。
+    for (final e in effects) {
+      final p = e.progress; // 0.0（出た瞬間）〜1.0（消える）
+      final cx = e.x * tile - camX + tile / 2;
+      final cy = e.y * tile - camY + tile / 2;
+      if (e.isFlash) {
+        // 当たった瞬間にパッと出て、すぐ薄くなる赤い円。
+        final alpha = (1 - p) * 0.6;
+        canvas.drawCircle(
+          Offset(cx, cy),
+          tile * 0.4,
+          Paint()..color = e.color.withValues(alpha: alpha),
+        );
+      } else if (e.text != null) {
+        // 上にふわっと昇りながら、終わりに向けて薄くなる数字。
+        final rise = p * tile * 0.9;
+        final alpha = (1 - p).clamp(0.0, 1.0);
+        final tp = TextPainter(
+          text: TextSpan(
+            text: e.text,
+            style: TextStyle(
+              color: e.color.withValues(alpha: alpha),
+              fontSize: tile * 0.5,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          textDirection: TextDirection.ltr,
+        )..layout();
+        tp.paint(canvas, Offset(cx - tp.width / 2, cy - rise - tp.height / 2));
+      }
+    }
   }
 
   void _paintTile(
@@ -809,4 +907,31 @@ class _DungeonPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _DungeonPainter oldDelegate) => true;
+}
+
+/// 戦闘の見た目演出1つ分（ダメージ数字 or ヒット時の点滅）。
+/// タイル座標で位置を持ち、`elapsed`（経過時間）が `lifetime` に達したら消える。
+class _Effect {
+  _Effect({
+    required this.x,
+    required this.y,
+    required this.color,
+    required this.lifetime,
+    this.text,
+    this.isFlash = false,
+  });
+
+  final double x; // タイル座標（横）
+  final double y; // タイル座標（縦）
+  final Color color;
+  final Duration lifetime; // 表示しつづける長さ
+  final String? text; // 数字や「MISS」など（null なら点滅だけ）
+  final bool isFlash; // true＝当たった瞬間の赤い円
+
+  Duration elapsed = Duration.zero; // 出てからの経過時間
+
+  /// 0.0（出た瞬間）〜1.0（消える直前）。
+  double get progress => lifetime.inMicroseconds == 0
+      ? 1.0
+      : (elapsed.inMicroseconds / lifetime.inMicroseconds).clamp(0.0, 1.0);
 }
