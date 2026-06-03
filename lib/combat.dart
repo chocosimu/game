@@ -87,6 +87,13 @@ int rollDamage(double baseDamage, Random random) {
   return dmg < 1 ? 1 : dmg;
 }
 
+/// 通常攻撃の命中率（§1.5）。トルネコ3は解析で 92%。
+/// ＝8% の確率で「はずれ」になる（プレイヤー→敵・敵→プレイヤー共通）。
+const double normalHitRate = 0.92;
+
+/// 通常攻撃が命中したかを判定する（§1.5）。true なら当たり。
+bool rollHit(Random random) => random.nextDouble() < normalHitRate;
+
 /// レベルアップ1回ぶんの最大HP上昇量を、乱数で決める（§1.2）。
 /// 分布：+5＝1/3／+4・+6＝各2/9／+3・+7＝各1/9（平均ちょうど+5）。
 int hpGrowth(Random random) {

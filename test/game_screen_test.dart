@@ -88,13 +88,40 @@ void main() {
     await tester.pump();
     expect(state.debugMonsters.length, 1);
 
-    // 右を押す＝敵マスへ動こうとする＝攻撃。素手Lv1ならスライムは一撃。
-    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
-    await tester.pump();
+    // 右を押す＝敵マスへ動こうとする＝攻撃。命中92%なので外れることもあるが、
+    // 何回か押せば必ず倒せる（隣接スライムは動かず殴り合いになる）。
+    var guard = 0;
+    while (state.debugMonsters.isNotEmpty && guard < 12) {
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pumpAndSettle();
+      guard++;
+    }
 
     expect(state.debugMonsters.isEmpty, true); // 倒した敵は片づけられる
-    expect(state.debugPlayer.exp, MonsterKind.slime.exp); // EXPが入った
+    expect(state.debugPlayer.exp, MonsterKind.slime.exp); // EXPが入った（1匹=2）
     expect(find.textContaining('倒した'), findsOneWidget); // ログが出る
+  });
+
+  testWidgets('中央の「・」ボタンで足踏みするとターンだけ進む', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(500, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(const MaterialApp(home: GameScreen(seed: 1)));
+    await tester.pump();
+
+    final state = tester.state<GameScreenState>(find.byType(GameScreen));
+    state.debugMonsters.clear(); // 敵に邪魔されずに足踏みだけを見る
+    final (sx, sy) = (state.debugPlayerX, state.debugPlayerY);
+
+    expect(find.text('ターン 0'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('wait')));
+    await tester.pumpAndSettle();
+
+    // その場にとどまったまま、ターンだけ進む。
+    expect(state.debugPlayerX, sx);
+    expect(state.debugPlayerY, sy);
+    expect(find.text('ターン 1'), findsOneWidget);
+    expect(find.textContaining('待った'), findsOneWidget);
   });
 
   testWidgets('敵の攻撃でHPが0になると「倒れた」画面が出る', (tester) async {
@@ -119,9 +146,14 @@ void main() {
     state.debugSetPlayerHp(3); // あと少しで倒れる
     await tester.pump();
 
-    // 右を押す＝敵を攻撃（倒せない）→ 敵が反撃 → HP0 → 倒れる。
-    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
-    await tester.pump();
+    // 右を押す＝敵を攻撃（倒せない）→ 敵が反撃。命中92%なので、
+    // 数ターン押せば必ず反撃が当たって HP0 → 倒れる。
+    var guard = 0;
+    while (!state.debugDefeated && guard < 12) {
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pumpAndSettle();
+      guard++;
+    }
 
     expect(state.debugDefeated, true);
     expect(find.text('倒れてしまった…'), findsOneWidget);
@@ -129,7 +161,7 @@ void main() {
 
     // 「最初からやり直す」を押すと、Lv1・HP満タンに戻り、画面も消える。
     await tester.tap(find.text('最初からやり直す'));
-    await tester.pump();
+    await tester.pumpAndSettle();
     expect(state.debugDefeated, false);
     expect(state.debugPlayer.level, 1);
     expect(state.debugPlayer.hp, state.debugPlayer.maxHp);

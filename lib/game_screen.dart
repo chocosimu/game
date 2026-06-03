@@ -31,8 +31,9 @@ class GameScreenState extends State<GameScreen> {
   int _floor = 1;
   int _turns = 0;
 
-  // 直前のできごと（攻撃・撃破・レベルアップ）を画面に1行で出す。
-  String _message = '';
+  // 直前の1ターンで起きたできごと（攻撃・撃破・レベルアップ等）を行でためる。
+  // 1ターンに「自分の攻撃」と「敵の反撃」が両方起きても、両方残るようにする。
+  final List<String> _messages = <String>[];
   // 倒れたかどうか（true のあいだは操作できず、やり直し画面を出す）。
   bool _defeated = false;
 
@@ -117,6 +118,12 @@ class GameScreenState extends State<GameScreen> {
   @visibleForTesting
   bool get debugDefeated => _defeated;
 
+  /// テスト用：プレイヤーのいま居る座標。
+  @visibleForTesting
+  int get debugPlayerX => _playerX;
+  @visibleForTesting
+  int get debugPlayerY => _playerY;
+
   /// テスト用：プレイヤーから (dx, dy) ずれたマスに敵を1匹置く。
   @visibleForTesting
   Monster debugSpawnMonster(MonsterKind kind, int dx, int dy) {
@@ -144,7 +151,7 @@ class GameScreenState extends State<GameScreen> {
       _floor = 1;
       _turns = 0;
       _defeated = false;
-      _message = '';
+      _messages.clear();
       _player = Player();
       _generateFloor();
     });
@@ -180,6 +187,9 @@ class GameScreenState extends State<GameScreen> {
     }
   }
 
+  /// ログに1行ためる（その1ターンのできごと）。
+  void _say(String text) => _messages.add(text);
+
   /// (dx, dy) 方向に1マス動こうとする。
   /// ・移動先に敵がいたら「攻撃」になる（その場から動かずに殴る）。
   /// ・壁なら何も起きない（ターンも進まない）。
@@ -193,8 +203,9 @@ class GameScreenState extends State<GameScreen> {
     final target = _monsterAt(nx, ny);
     if (target != null) {
       setState(() {
+        _messages.clear();
         _attackMonster(target);
-        _endPlayerTurn(); // 満腹度・自然回復＋敵の行動
+        _endPlayerTurn(); // 敵の行動 → 環境処理（§0.1）
       });
       return;
     }
@@ -210,6 +221,7 @@ class GameScreenState extends State<GameScreen> {
     }
 
     setState(() {
+      _messages.clear();
       _playerX = nx;
       _playerY = ny;
       // 下り階段に乗ったら、次のフロアへ（敵の行動は無し・地形が作り直される）。
@@ -217,28 +229,45 @@ class GameScreenState extends State<GameScreen> {
         _turns++;
         _player.onStep();
         _floor++;
-        _message = 'B${_floor}F へ下りた';
+        _say('B${_floor}F へ下りた');
         _generateFloor();
         _checkDefeat();
         return;
       }
-      _endPlayerTurn(); // 満腹度・自然回復＋敵の行動
+      _endPlayerTurn(); // 敵の行動 → 環境処理（§0.1）
     });
   }
 
-  /// プレイヤーが1回行動したあとの共通処理。
-  /// 満腹度・HP自然回復を進め、つづいて敵がいっせいに行動する。
+  /// その場で待つ（足踏み）。§0.1 の1行動＝1ターン。移動せずに敵に手番を渡す。
+  void _wait() {
+    if (_defeated) return;
+    setState(() {
+      _messages.clear();
+      _say('その場で待った');
+      _endPlayerTurn();
+    });
+  }
+
+  /// プレイヤーが1回行動したあとの共通処理。§0.1 の順番：
+  /// 「プレイヤー（行動済み）→ 敵全員が行動 → 環境処理（満腹度・自然回復）」。
   void _endPlayerTurn() {
     _turns++;
-    _player.onStep(); // 満腹度減・空腹ダメージ・HP自然回復（§1.2/§1.4）
-    if (_player.isAlive) _enemiesAct();
+    if (_player.isAlive) _enemiesAct(); // まず敵全員が動く
     _monsters.removeWhere((m) => !m.isAlive); // 倒した敵を片づける
+    if (_player.isAlive) {
+      _player.onStep(); // 環境処理：満腹度減・空腹ダメージ・HP自然回復（§1.2/§1.4）
+    }
     _updateVisibility();
     _checkDefeat();
   }
 
-  /// プレイヤー → 敵 への攻撃（§1.6 のダメージ式）。
+  /// プレイヤー → 敵 への攻撃（§1.6 のダメージ式・§1.5 命中92%）。
   void _attackMonster(Monster m) {
+    // まず命中判定（8%で外れる）。
+    if (!rollHit(_rng)) {
+      _say('${m.kind.name}に攻撃したが はずれた');
+      return;
+    }
     final atkPower =
         baseAttackPower(levelAttackFor(_player.level), _player.strength);
     final dmg = rollDamage(baseDamage(atkPower, m.kind.defense), _rng);
@@ -246,18 +275,22 @@ class GameScreenState extends State<GameScreen> {
     if (m.hp <= 0) {
       m.hp = 0;
       final ups = _player.gainExp(m.kind.exp, _rng);
-      _message = '${m.kind.name}を倒した！ EXP +${m.kind.exp}'
-          '${ups > 0 ? '／レベルが $ups 上がった！' : ''}';
+      _say('${m.kind.name}を倒した！ EXP +${m.kind.exp}'
+          '${ups > 0 ? '／レベルが $ups 上がった！' : ''}');
     } else {
-      _message = '${m.kind.name}に $dmg のダメージ';
+      _say('${m.kind.name}に $dmg のダメージ');
     }
   }
 
-  /// 敵 → プレイヤー への攻撃（§1.6）。今はプレイヤーの防御力は0（盾なし）。
+  /// 敵 → プレイヤー への攻撃（§1.6・§1.5 命中92%）。今はプレイヤーの防御力は0（盾なし）。
   void _enemyAttack(Monster m) {
+    if (!rollHit(_rng)) {
+      _say('${m.kind.name}の攻撃を かわした');
+      return;
+    }
     final dmg = rollDamage(baseDamage(m.kind.attack.toDouble(), 0), _rng);
     _player.hp = (_player.hp - dmg).clamp(0, _player.maxHp);
-    _message = '${m.kind.name}の攻撃！ $dmg のダメージ';
+    _say('${m.kind.name}の攻撃！ $dmg のダメージ');
   }
 
   /// このフロアの敵全員に1回ずつ行動させる。
@@ -339,14 +372,21 @@ class GameScreenState extends State<GameScreen> {
   void _checkDefeat() {
     if (!_player.isAlive && !_defeated) {
       _defeated = true;
-      _message = '力尽きてしまった…';
+      _say('力尽きてしまった…');
     }
   }
 
-  /// キーボード入力（PCでの確認用）。矢印・WASD・QEZC に対応。
+  /// キーボード入力（PCでの確認用）。矢印・WASD・QEZC で移動、`.`/Space で足踏み。
   void _handleKey(KeyEvent event) {
     if (event is! KeyDownEvent) return;
-    final delta = _deltaForKey(event.logicalKey);
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.period ||
+        key == LogicalKeyboardKey.space ||
+        key == LogicalKeyboardKey.numpad5) {
+      _wait();
+      return;
+    }
+    final delta = _deltaForKey(key);
     if (delta != null) _tryMove(delta.$1, delta.$2);
   }
 
@@ -451,22 +491,40 @@ class GameScreenState extends State<GameScreen> {
             ],
           ),
           const SizedBox(height: 6),
-          // 直前のできごと（攻撃・撃破・レベルアップ）の1行ログ。
+          // 直前の1ターンのできごと（攻撃・反撃・撃破・レベルアップ）を最大3行で出す。
           SizedBox(
-            height: 18,
+            height: 48,
             child: Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                _message,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Colors.white70, fontSize: 12),
+              alignment: Alignment.topLeft,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // 新しいできごとほど下に並ぶ。多すぎるときは新しい方の3行だけ。
+                  for (final line in _recentMessages)
+                    Text(
+                      line,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 12,
+                        height: 1.3,
+                      ),
+                    ),
+                ],
               ),
             ),
           ),
         ],
       ),
     );
+  }
+
+  /// ログのうち、画面に出す新しい方の最大3行。
+  List<String> get _recentMessages {
+    const maxLines = 3;
+    if (_messages.length <= maxLines) return _messages;
+    return _messages.sublist(_messages.length - maxLines);
   }
 
   /// 倒れたときに地図の上にかぶせる「やり直し」画面。
@@ -562,12 +620,12 @@ class GameScreenState extends State<GameScreen> {
       child: Column(
         children: [
           const Text(
-            '矢印キー / WASD・QEZC でも動けます',
+            '矢印 / WASD・QEZC で移動、中央(・) や スペース で足踏み',
             style: TextStyle(color: Colors.white38, fontSize: 12),
           ),
           const SizedBox(height: 8),
           _dpadRow(const [(-1, -1, '↖'), (0, -1, '↑'), (1, -1, '↗')]),
-          _dpadRow(const [(-1, 0, '←'), (0, 0, ''), (1, 0, '→')]),
+          _dpadRow(const [(-1, 0, '←'), (0, 0, '・'), (1, 0, '→')]),
           _dpadRow(const [(-1, 1, '↙'), (0, 1, '↓'), (1, 1, '↘')]),
         ],
       ),
@@ -587,15 +645,17 @@ class GameScreenState extends State<GameScreen> {
     if (glyph.isEmpty) {
       return const SizedBox(width: 64, height: 64);
     }
+    // 中央(0,0)は「足踏み（待つ）」ボタンにする。
+    final isWait = dx == 0 && dy == 0;
     return Padding(
       padding: const EdgeInsets.all(4),
       child: Material(
-        color: Colors.white.withValues(alpha: 0.08),
+        color: Colors.white.withValues(alpha: isWait ? 0.05 : 0.08),
         borderRadius: BorderRadius.circular(12),
         child: InkWell(
-          key: ValueKey('dir_${dx}_$dy'),
+          key: ValueKey(isWait ? 'wait' : 'dir_${dx}_$dy'),
           borderRadius: BorderRadius.circular(12),
-          onTap: () => _tryMove(dx, dy),
+          onTap: isWait ? _wait : () => _tryMove(dx, dy),
           child: SizedBox(
             width: 56,
             height: 56,

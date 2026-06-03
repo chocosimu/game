@@ -57,6 +57,18 @@ void main() {
     expect(rollDamage(0.1, Random(1)), 1);
   });
 
+  test('通常攻撃の命中率はおよそ92%（§1.5）', () {
+    expect(normalHitRate, closeTo(0.92, 1e-9));
+    final rnd = Random(2026);
+    var hits = 0;
+    const tries = 20000;
+    for (var i = 0; i < tries; i++) {
+      if (rollHit(rnd)) hits++;
+    }
+    // 乱数なので幅をもって、だいたい92%（±2%）に収まることを確認。
+    expect(hits / tries, closeTo(0.92, 0.02));
+  });
+
   test('HP成長は +3〜+7 の範囲（§1.2）', () {
     final rnd = Random(7);
     for (var i = 0; i < 1000; i++) {
