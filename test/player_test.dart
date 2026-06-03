@@ -1,5 +1,7 @@
 // プレイヤーの状態（HP・満腹度・レベル）の基本テスト。
 
+import 'dart:math';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:game/player.dart';
 
@@ -38,5 +40,38 @@ void main() {
     final p = Player(hp: 6, fullness: 50);
     expect(p.hpRatio, closeTo(6 / 15, 1e-9));
     expect(p.fullnessRatio, closeTo(0.5, 1e-9));
+  });
+
+  test('経験値を得るとレベルが上がり、最大HPが増える', () {
+    final p = Player();
+    final ups = p.gainExp(10, Random(1)); // Lv2に必要な累積EXPちょうど
+    expect(ups, 1);
+    expect(p.level, 2);
+    expect(p.exp, 10);
+    // 最大HPは 15 + (3〜7) の範囲に増える
+    expect(p.maxHp, inInclusiveRange(18, 22));
+  });
+
+  test('スライム1匹(EXP2)ではまだレベルは上がらない', () {
+    final p = Player();
+    final ups = p.gainExp(2, Random(1));
+    expect(ups, 0);
+    expect(p.level, 1);
+    expect(p.exp, 2);
+  });
+
+  test('HPが減っていると歩くたびに少しずつ自然回復する（満腹度がある間）', () {
+    // 最大HP15なら毎ターン 15/150=0.1 回復 → 10ターンで1回復。
+    final p = Player(hp: 5);
+    for (var i = 0; i < 10; i++) {
+      p.onStep();
+    }
+    expect(p.hp, 6);
+  });
+
+  test('満腹度0のときは自然回復せず、逆にHPが減る', () {
+    final p = Player(hp: 10, fullness: 0);
+    p.onStep();
+    expect(p.hp, 9);
   });
 }

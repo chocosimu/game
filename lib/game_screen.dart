@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'combat.dart';
 import 'dungeon.dart';
 import 'monster.dart';
 import 'player.dart';
@@ -15,10 +16,10 @@ class GameScreen extends StatefulWidget {
   final int? seed;
 
   @override
-  State<GameScreen> createState() => _GameScreenState();
+  State<GameScreen> createState() => GameScreenState();
 }
 
-class _GameScreenState extends State<GameScreen> {
+class GameScreenState extends State<GameScreen> {
   static const int _mapWidth = 41;
   static const int _mapHeight = 25;
 
@@ -30,6 +31,14 @@ class _GameScreenState extends State<GameScreen> {
   int _floor = 1;
   int _turns = 0;
 
+  // 直前のできごと（攻撃・撃破・レベルアップ）を画面に1行で出す。
+  String _message = '';
+  // 倒れたかどうか（true のあいだは操作できず、やり直し画面を出す）。
+  bool _defeated = false;
+
+  // 戦闘の乱数（ダメージのブレ・敵のうろつき）。seed があれば再現できる。
+  late final Random _rng;
+
   // フォグ（霧）。一度でも見たマス／いま見えているマスを覚えておく。
   late List<List<bool>> _discovered;
   late List<List<bool>> _visible;
@@ -40,6 +49,7 @@ class _GameScreenState extends State<GameScreen> {
   @override
   void initState() {
     super.initState();
+    _rng = widget.seed != null ? Random(widget.seed! + 9999) : Random();
     _player = Player();
     _generateFloor();
   }
@@ -93,6 +103,34 @@ class _GameScreenState extends State<GameScreen> {
     }
   }
 
+  // ----- ここからテスト用の入口（@visibleForTesting）。本編では使わない。 -----
+
+  /// テスト用：プレイヤーの状態を読む。
+  @visibleForTesting
+  Player get debugPlayer => _player;
+
+  /// テスト用：いまフロアにいる敵の一覧。
+  @visibleForTesting
+  List<Monster> get debugMonsters => _monsters;
+
+  /// テスト用：倒れたかどうか。
+  @visibleForTesting
+  bool get debugDefeated => _defeated;
+
+  /// テスト用：プレイヤーから (dx, dy) ずれたマスに敵を1匹置く。
+  @visibleForTesting
+  Monster debugSpawnMonster(MonsterKind kind, int dx, int dy) {
+    final m = Monster(kind: kind, x: _playerX + dx, y: _playerY + dy);
+    setState(() => _monsters.add(m));
+    return m;
+  }
+
+  /// テスト用：プレイヤーの今のHPを差し替える。
+  @visibleForTesting
+  void debugSetPlayerHp(int hp) => setState(() => _player.hp = hp);
+
+  // ----- テスト用の入口ここまで。 -----
+
   /// その座標に生きている敵がいれば返す（いなければ null）。
   Monster? _monsterAt(int x, int y) {
     for (final m in _monsters) {
@@ -105,6 +143,8 @@ class _GameScreenState extends State<GameScreen> {
     setState(() {
       _floor = 1;
       _turns = 0;
+      _defeated = false;
+      _message = '';
       _player = Player();
       _generateFloor();
     });
@@ -140,11 +180,25 @@ class _GameScreenState extends State<GameScreen> {
     }
   }
 
-  /// (dx, dy) 方向に1マス動こうとする。壁なら動かない＝ターンも進まない。
+  /// (dx, dy) 方向に1マス動こうとする。
+  /// ・移動先に敵がいたら「攻撃」になる（その場から動かずに殴る）。
+  /// ・壁なら何も起きない（ターンも進まない）。
   void _tryMove(int dx, int dy) {
+    if (_defeated) return; // 倒れているあいだは操作できない
     if (dx == 0 && dy == 0) return;
     final nx = _playerX + dx;
     final ny = _playerY + dy;
+
+    // 移動先に敵がいたら、ぶつかって「攻撃」する（移動はしない）。
+    final target = _monsterAt(nx, ny);
+    if (target != null) {
+      setState(() {
+        _attackMonster(target);
+        _endPlayerTurn(); // 満腹度・自然回復＋敵の行動
+      });
+      return;
+    }
+
     if (!_dungeon.isWalkable(nx, ny)) return;
 
     // 斜め移動のときは、壁の角をすり抜けないようにする。
@@ -155,22 +209,138 @@ class _GameScreenState extends State<GameScreen> {
       }
     }
 
-    // 移動先に敵がいたら、今はぶつかって進めないだけ。
-    // （ぶつかって戦う「戦闘」は次の段階で作る。）
-    if (_monsterAt(nx, ny) != null) return;
-
     setState(() {
       _playerX = nx;
       _playerY = ny;
-      _turns++;
-      _player.onStep(); // 1歩あるくと満腹度が減る（0ならHPが減る）
-      _updateVisibility();
-      // 下り階段に乗ったら、次のフロアへ（地形が作り直される）。
+      // 下り階段に乗ったら、次のフロアへ（敵の行動は無し・地形が作り直される）。
       if (_dungeon.tiles[_playerY][_playerX] == TileType.stairsDown) {
+        _turns++;
+        _player.onStep();
         _floor++;
+        _message = 'B${_floor}F へ下りた';
         _generateFloor();
+        _checkDefeat();
+        return;
       }
+      _endPlayerTurn(); // 満腹度・自然回復＋敵の行動
     });
+  }
+
+  /// プレイヤーが1回行動したあとの共通処理。
+  /// 満腹度・HP自然回復を進め、つづいて敵がいっせいに行動する。
+  void _endPlayerTurn() {
+    _turns++;
+    _player.onStep(); // 満腹度減・空腹ダメージ・HP自然回復（§1.2/§1.4）
+    if (_player.isAlive) _enemiesAct();
+    _monsters.removeWhere((m) => !m.isAlive); // 倒した敵を片づける
+    _updateVisibility();
+    _checkDefeat();
+  }
+
+  /// プレイヤー → 敵 への攻撃（§1.6 のダメージ式）。
+  void _attackMonster(Monster m) {
+    final atkPower =
+        baseAttackPower(levelAttackFor(_player.level), _player.strength);
+    final dmg = rollDamage(baseDamage(atkPower, m.kind.defense), _rng);
+    m.hp -= dmg;
+    if (m.hp <= 0) {
+      m.hp = 0;
+      final ups = _player.gainExp(m.kind.exp, _rng);
+      _message = '${m.kind.name}を倒した！ EXP +${m.kind.exp}'
+          '${ups > 0 ? '／レベルが $ups 上がった！' : ''}';
+    } else {
+      _message = '${m.kind.name}に $dmg のダメージ';
+    }
+  }
+
+  /// 敵 → プレイヤー への攻撃（§1.6）。今はプレイヤーの防御力は0（盾なし）。
+  void _enemyAttack(Monster m) {
+    final dmg = rollDamage(baseDamage(m.kind.attack.toDouble(), 0), _rng);
+    _player.hp = (_player.hp - dmg).clamp(0, _player.maxHp);
+    _message = '${m.kind.name}の攻撃！ $dmg のダメージ';
+  }
+
+  /// このフロアの敵全員に1回ずつ行動させる。
+  /// 隣にいれば攻撃／近ければ近づく／遠ければその場でうろつく。
+  void _enemiesAct() {
+    for (final m in _monsters) {
+      if (!m.isAlive) continue;
+      if (!_player.isAlive) break; // プレイヤーが倒れたらそこで終了
+      final dxToP = _playerX - m.x;
+      final dyToP = _playerY - m.y;
+      final chebyshev = max(dxToP.abs(), dyToP.abs());
+
+      if (chebyshev == 1) {
+        _enemyAttack(m); // 隣接（8方向）なら攻撃
+      } else if (_sameRoomAsPlayer(m) || chebyshev <= 3) {
+        _moveEnemyToward(m, dxToP.sign, dyToP.sign); // 近いので追いかける
+      } else {
+        _wanderEnemy(m); // 遠いのでうろつく
+      }
+    }
+  }
+
+  /// 敵 m とプレイヤーが同じ部屋にいるか（通路は -1 なので一致しない）。
+  bool _sameRoomAsPlayer(Monster m) {
+    final mr = _dungeon.roomAt(m.x, m.y);
+    return mr != -1 && mr == _dungeon.roomAt(_playerX, _playerY);
+  }
+
+  /// 敵をプレイヤーの方へ1マス寄せる（斜め→縦横の順に通れる方向を探す）。
+  void _moveEnemyToward(Monster m, int sx, int sy) {
+    final candidates = <(int, int)>[
+      if (sx != 0 && sy != 0) (sx, sy),
+      if (sx != 0) (sx, 0),
+      if (sy != 0) (0, sy),
+    ];
+    for (final (cdx, cdy) in candidates) {
+      if (_canEnemyStep(m, cdx, cdy)) {
+        m.x += cdx;
+        m.y += cdy;
+        return;
+      }
+    }
+  }
+
+  /// 敵をでたらめな方向に1マス動かす（半分はその場でとどまる）。
+  void _wanderEnemy(Monster m) {
+    if (_rng.nextBool()) return;
+    final dirs = <(int, int)>[
+      (-1, -1), (0, -1), (1, -1),
+      (-1, 0), (1, 0),
+      (-1, 1), (0, 1), (1, 1),
+    ]..shuffle(_rng);
+    for (final (dx, dy) in dirs) {
+      if (_canEnemyStep(m, dx, dy)) {
+        m.x += dx;
+        m.y += dy;
+        return;
+      }
+    }
+  }
+
+  /// 敵が (dx, dy) 方向へ1マス動けるか（壁・プレイヤー・別の敵・角抜けを禁止）。
+  bool _canEnemyStep(Monster m, int dx, int dy) {
+    final nx = m.x + dx;
+    final ny = m.y + dy;
+    if (!_dungeon.isWalkable(nx, ny)) return false;
+    if (nx == _playerX && ny == _playerY) return false; // そこはプレイヤー
+    if (_monsterAt(nx, ny) != null) return false; // 別の敵がいる
+    if (dx != 0 && dy != 0) {
+      if (!_dungeon.isWalkable(m.x + dx, m.y) ||
+          !_dungeon.isWalkable(m.x, m.y + dy)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /// プレイヤーのHPが0なら「倒れた」状態にする。
+  void _checkDefeat() {
+    if (!_player.isAlive && !_defeated) {
+      _defeated = true;
+      _message = '力尽きてしまった…';
+    }
   }
 
   /// キーボード入力（PCでの確認用）。矢印・WASD・QEZC に対応。
@@ -207,20 +377,25 @@ class _GameScreenState extends State<GameScreen> {
             children: [
               _buildHud(),
               Expanded(
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: _focusNode.requestFocus,
-                  child: CustomPaint(
-                    painter: _DungeonPainter(
-                      dungeon: _dungeon,
-                      playerX: _playerX,
-                      playerY: _playerY,
-                      discovered: _discovered,
-                      visible: _visible,
-                      monsters: _monsters,
+                child: Stack(
+                  children: [
+                    GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: _focusNode.requestFocus,
+                      child: CustomPaint(
+                        painter: _DungeonPainter(
+                          dungeon: _dungeon,
+                          playerX: _playerX,
+                          playerY: _playerY,
+                          discovered: _discovered,
+                          visible: _visible,
+                          monsters: _monsters,
+                        ),
+                        child: const SizedBox.expand(),
+                      ),
                     ),
-                    child: const SizedBox.expand(),
-                  ),
+                    if (_defeated) _buildDefeatOverlay(),
+                  ],
                 ),
               ),
               _buildControls(),
@@ -275,7 +450,55 @@ class _GameScreenState extends State<GameScreen> {
               ),
             ],
           ),
+          const SizedBox(height: 6),
+          // 直前のできごと（攻撃・撃破・レベルアップ）の1行ログ。
+          SizedBox(
+            height: 18,
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                _message,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white70, fontSize: 12),
+              ),
+            ),
+          ),
         ],
+      ),
+    );
+  }
+
+  /// 倒れたときに地図の上にかぶせる「やり直し」画面。
+  Widget _buildDefeatOverlay() {
+    return Positioned.fill(
+      child: Container(
+        color: Colors.black.withValues(alpha: 0.72),
+        alignment: Alignment.center,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              '倒れてしまった…',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 26,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'B${_floor}F ／ $_turnsターンで力尽きた',
+              style: const TextStyle(color: Colors.white60, fontSize: 14),
+            ),
+            const SizedBox(height: 20),
+            FilledButton.icon(
+              onPressed: _restart,
+              icon: const Icon(Icons.refresh),
+              label: const Text('最初からやり直す'),
+            ),
+          ],
+        ),
       ),
     );
   }
