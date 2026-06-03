@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:game/game_screen.dart';
+import 'package:game/monster.dart';
 
 void main() {
   testWidgets('最初はターン0で、移動キーを押すとターンが進む', (tester) async {
@@ -70,5 +71,68 @@ void main() {
     expect(find.text('Lv 1'), findsOneWidget);
     expect(find.text('HP 15/15'), findsOneWidget);
     expect(find.text('満腹 100/100'), findsOneWidget);
+  });
+
+  testWidgets('右隣の敵に向かって動くと「攻撃」になり、倒すと経験値が入る', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(500, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(const MaterialApp(home: GameScreen(seed: 1)));
+    await tester.pump();
+
+    final state = tester.state<GameScreenState>(find.byType(GameScreen));
+    // フロアに最初からいる敵をどけて、検証を1匹だけに絞る。
+    state.debugMonsters.clear();
+    // スタートは部屋の中心なので右隣は床。そこにスライムを置く。
+    state.debugSpawnMonster(MonsterKind.slime, 1, 0);
+    await tester.pump();
+    expect(state.debugMonsters.length, 1);
+
+    // 右を押す＝敵マスへ動こうとする＝攻撃。素手Lv1ならスライムは一撃。
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pump();
+
+    expect(state.debugMonsters.isEmpty, true); // 倒した敵は片づけられる
+    expect(state.debugPlayer.exp, MonsterKind.slime.exp); // EXPが入った
+    expect(find.textContaining('倒した'), findsOneWidget); // ログが出る
+  });
+
+  testWidgets('敵の攻撃でHPが0になると「倒れた」画面が出る', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(500, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(const MaterialApp(home: GameScreen(seed: 1)));
+    await tester.pump();
+
+    final state = tester.state<GameScreenState>(find.byType(GameScreen));
+    state.debugMonsters.clear(); // 最初からいる敵をどけて1匹に絞る
+    // 一撃では倒せない頑丈で強い敵を右隣に置く（反撃で大ダメージ）。
+    const tough = MonsterKind(
+      name: 'つよいの',
+      maxHp: 999,
+      attack: 80,
+      defense: 0,
+      exp: 0,
+      color: 0xFFFF0000,
+    );
+    state.debugSpawnMonster(tough, 1, 0);
+    state.debugSetPlayerHp(3); // あと少しで倒れる
+    await tester.pump();
+
+    // 右を押す＝敵を攻撃（倒せない）→ 敵が反撃 → HP0 → 倒れる。
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pump();
+
+    expect(state.debugDefeated, true);
+    expect(find.text('倒れてしまった…'), findsOneWidget);
+    expect(find.text('最初からやり直す'), findsOneWidget);
+
+    // 「最初からやり直す」を押すと、Lv1・HP満タンに戻り、画面も消える。
+    await tester.tap(find.text('最初からやり直す'));
+    await tester.pump();
+    expect(state.debugDefeated, false);
+    expect(state.debugPlayer.level, 1);
+    expect(state.debugPlayer.hp, state.debugPlayer.maxHp);
+    expect(find.text('倒れてしまった…'), findsNothing);
   });
 }
